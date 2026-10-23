@@ -61,36 +61,19 @@ each.
 
 ### Water and concentrate supply
 
-Both fluids reach the machine **pressurised, on demand**, from a small
-distribution system we built before this project:
+Both fluids reach the machine **pressurised, on demand**, from a distribution
+system we built before this project:
 
-- **Water** is RO (reverse-osmosis) water. *TODO: RO system and storage.*
-- **Concentrate** is neat coolant concentrate drawn from a drum. *TODO: how
-  it's drawn from the drum.*
-- Each fluid has its own **120 V pressure pump** (SEAFLO 33-series, 115 V,
-  1.0 A max) feeding a **small pressure tank** (water ~5–8 gal, concentrate
-  ~1–2 gal). *TODO: pressure settings.*
-- Each machine gets its **own run of each fluid** from the pressure tanks —
-  separate lines, not a shared manifold. *TODO: tubing type and size.*
-- There's a **manual shutoff on each run** upstream of the machine.
+- **Water:** an RO unit fills a storage tank; a pressure pump and a small
+  pressure tank (~5–8 gal) feed the shop.
+- **Concentrate:** the same model of pump draws from the drum into its own small
+  pressure tank (~1–2 gal).
+- **½" PEX runs** (red concentrate, blue water), a separate run of each to each
+  machine, with manual shut-offs. No filters or check valves.
 
-Why it matters to the design:
-
-- **The small pressure tanks are a safety layer.** We switch the pumps with
-  smart plugs and run them only while the shop is staffed or during a fill. A
-  valve stuck open can then deliver at most what's in the pressure tank —
-  about 5–8 gal of water — not an endless supply. Without that, a stuck valve
-  is unbounded. See [safety.md](docs/safety.md#the-safety-ladder).
-- **Supply flow sets the fill timing.** Our water arrives at ~4.2–4.4 L/min
-  (~1.1 gal/min); the fill cap, timeout and valve watchdog are sized around
-  that ([fill-logic.md](docs/fill-logic.md#5-the-metered-fill)). Measure yours.
-- **The concentrate line must be primed.** Air in it made our flow meter read
-  2.1× high. Concentrate also surges when its valve opens (the pressure tank
-  dumping), which is why doses are metered by volume, never timed.
-- **Shared pumps need shared rules.** Our pumps feed the whole shop, so a fill
-  on one machine re-pressurises every run. A stuck valve needs to lock the
-  pump off, not just alarm (designed, not built yet — see
-  [safety.md](docs/safety.md#known-gaps-as-of-2026-10-23)).
+The pressure tanks matter to the safety design: with the pumps off, a valve
+stuck open can only deliver what's in the tank. Details, and the gaps that
+leaves, in **[docs/supply-system.md](docs/supply-system.md)**.
 
 ### Other things this assumes
 
@@ -162,6 +145,7 @@ docs/
   build-notes.md             mounting rules, sensor settings, commissioning tests
   lessons.md                 things that bit us
   results.md                 what the data showed
+  supply-system.md           the water and concentrate distribution it relies on
 config/
   esphome/                   MiniPLC config, including the valve watchdog
   home-assistant/            fill script, permissive, automations, helpers
