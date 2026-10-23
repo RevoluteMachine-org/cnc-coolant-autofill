@@ -1,0 +1,268 @@
+# Coolant system helpers.
+#
+# We created all of these in the Home Assistant UI, so they have no YAML of
+# their own. This file is the YAML EQUIVALENT of the settings stored in our
+# Home Assistant (2026.10.1), read back on 2026-10-23. Template text is copied
+# exactly; only the MiniPLC's MAC-derived entity prefix is replaced.
+# Paste the sections into configuration.yaml (or a package), or recreate them
+# in the UI with the same settings.
+#
+# Placeholders to change for your system:
+#   homemaster_miniplc_xxxxxx_   -> your MiniPLC's entity prefix
+#
+# Signal chain these depend on (ESPHome / HomeMaster packages, not helpers):
+#   ..._aio_1_ai1_mv  Brix 4–20 mA across a 499 Ω shunt, millivolts
+#   ..._aio_1_ai2_mv  level 4–20 mA across a 499 Ω shunt, millivolts
+#   ..._aio_1_rtd1_temperature / _rtd1_fault   Pt100 on the AIO's RTD1
+#   ..._wld_1_flow1_total / flow2_total        concentrate / water meters, gal
+#   ..._wld_1_di3 / di4   FD-H error outputs (N.C.: on = healthy — see
+#                         docs/fill-logic.md for why that isn't fail-safe)
+#   sensor.umc_500_coolant_miniplc_conveyor_filter_upstream_pressure  psi
+
+template:
+  - sensor:
+      # 4–20 mA -> 0–20 Brix. Unknown outside 3.8–20.5 mA so a broken loop
+      # never reads as zero.
+      - name: Coolant Brix (bench)
+        unique_id: coolant_brix_bench
+        unit_of_measurement: "°Bx"
+        state_class: measurement
+        state: "{% set mv = states('sensor.homemaster_miniplc_xxxxxx_aio_1_ai1_mv') | float(none) %}{% if mv is not none %}{% set ma = mv / 499 %}{% if 3.8 <= ma <= 20.5 %}{{ ((ma - 4) / 16 * 20) | round(2) }}{% else %}{{ none }}{% endif %}{% else %}{{ none }}{% endif %}"
+
+      # 4–20 mA -> 0–500 mm. The span must match the one set on the FD-H.
+      - name: Coolant level (bench)
+        unique_id: coolant_level_bench
+        unit_of_measurement: mm
+        device_class: distance
+        state_class: measurement
+        state: "{% set mv = states('sensor.homemaster_miniplc_xxxxxx_aio_1_ai2_mv') | float(none) %}{% if mv is not none %}{% set ma = mv / 499 %}{% if 3.8 <= ma <= 20.5 %}{{ ((ma - 4) / 16 * 500) | round(1) }}{% else %}{{ none }}{% endif %}{% else %}{{ none }}{% endif %}"
+
+      # Brix × 2.3 (our coolant maker's refractometer factor). Unknown below
+      # 2.0 Brix so pulling the probe for cleaning can't look like lean coolant.
+      - name: Coolant concentration
+        unique_id: coolant_concentration
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: "{% set b = states('sensor.coolant_brix_bench') | float(none) %}{% if b is not none and b >= 2.0 %}{{ (b * 2.3) | round(2) }}{% else %}{{ none }}{% endif %}"
+
+      # RTD1 in 2-wire mode reads high by the cordset's lead resistance;
+      # −0.9 °C matched the refractometer's built-in temperature.
+      - name: Coolant temperature
+        unique_id: coolant_temperature
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: "{% if has_value('sensor.homemaster_miniplc_xxxxxx_aio_1_rtd1_temperature') and is_state('binary_sensor.homemaster_miniplc_xxxxxx_aio_1_rtd1_fault', 'off') %}{{ (states('sensor.homemaster_miniplc_xxxxxx_aio_1_rtd1_temperature') | float - 0.9) | round(2) }}{% else %}{{ none }}{% endif %}"
+
+      # Concentration expected just after a band-sized water fill (the
+      # leanest moment). Used only by the observe-only dose check.
+      - name: Coolant predicted trough
+        unique_id: coolant_predicted_trough
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: "{% set c = states('sensor.coolant_concentration') | float(none) %}{% set trig = states('input_number.coolant_fill_trigger') | float(none) %}{% set tgt = states('input_number.coolant_fill_target') | float(none) %}{% if c is none or trig is none or tgt is none %}{{ none }}{% else %}{% set v = (trig + 20) * 0.55 %}{% set f = [tgt - trig, 0] | max * 0.55 %}{{ (c * v / (v + f)) | round(2) }}{% endif %}"
+
+  - binary_sensor:
+      - name: Fill check machine running 1h
+        unique_id: fill_check_machine_running_1h
+        state: "{{ is_state('binary_sensor.umc_500_active', 'on') and (now() - states.binary_sensor.umc_500_active.last_changed).total_seconds() >= 3600 }}"
+
+      # THE WATER-FILL PERMISSIVE. Shown on our dashboard as "Water fill
+      # permitted"; the entity ID kept its original observe-only name.
+      # All must hold: running ≥ 1 h · conveyor wash in the last 10 min ·
+      # 1h mean below the trigger · 1h mean below the 123 mm ceiling ·
+      # not rising · both FD-H health inputs healthy.
+      - name: Fill would trigger observe only
+        unique_id: fill_would_trigger_observe_only
+        state: "{% set mean = states('sensor.coolant_level_1h_mean') | float(none) %}{% set trig = states('input_number.coolant_fill_trigger') | float(none) %}{{ mean is not none and trig is not none and is_state('binary_sensor.fill_check_machine_running_1h', 'on') and states('sensor.conveyor_wash_time_last_10_min') | float(0) > 0 and mean < trig and mean < 123 and is_state('binary_sensor.coolant_level_rising', 'off') and is_state('binary_sensor.homemaster_miniplc_xxxxxx_wld_1_di3', 'on') and is_state('binary_sensor.homemaster_miniplc_xxxxxx_wld_1_di4', 'on') }}"
+
+      # Observe only — nothing acts on it. Concentrate dosing is not automated.
+      - name: Concentrate dose indicated observe only
+        unique_id: concentrate_dose_indicated_observe_only
+        state: "{% set pred = states('sensor.coolant_predicted_trough') | float(none) %}{% set sd = states('sensor.coolant_brix_15m_stdev') | float(none) %}{% set added = states('sensor.umc_500_coolant_miniplc_coolant_concentrate_added_last_24h') | float(0) %}{% set last = state_attr('input_datetime.coolant_last_concentrate_dose', 'timestamp') %}{{ pred is not none and sd is not none and is_state('binary_sensor.fill_check_machine_running_1h', 'on') and states('sensor.conveyor_wash_time_last_10_min') | float(0) > 0 and is_state('binary_sensor.homemaster_miniplc_xxxxxx_wld_1_di3', 'on') and sd < 0.03 and pred < (4.9 * 2.3) and (last is none or (now().timestamp() - last) >= 4 * 3600) and added < 1.0 and is_state('switch.coolant_concentrate_pump', 'on') and is_state('binary_sensor.umc_500_coolant_miniplc_valve_watchdog_tripped', 'off') }}"
+
+      # Machine run state from the current one phase draws (Shelly Pro 3EM).
+      # On above 5 A for 20 s; off below 3 A for 90 s. Ours is a YAML
+      # template in configuration.yaml; this block is copied from it.
+      # Placeholder: shellypro3em_xxxxxxxxxxxx -> your energy meter's entity.
+      - name: "UMC 500 Active"
+        unique_id: umc_500_active
+        state: >
+          {% set amps = states('sensor.shellypro3em_xxxxxxxxxxxx_phase_c_current')|float(0) %}
+          {% set start = 5.0 %}
+          {% set stop  = 3.0 %}
+          {% set was_on = is_state(this.entity_id, 'on') %}
+          {{ amps > (stop if was_on else start) }}
+        delay_on:
+          seconds: 20
+        delay_off:
+          seconds: 90
+
+sensor:
+  # Time-weighted rolling 1-hour mean of the level — what the fill logic
+  # triggers on. The level reports ~1,600 times an hour, hence 5000 samples.
+  - platform: statistics
+    name: Coolant level 1h mean
+    unique_id: coolant_level_1h_mean
+    entity_id: sensor.coolant_level_bench
+    state_characteristic: average_step
+    sampling_size: 5000
+    max_age:
+      hours: 1
+    keep_last_sample: true
+    precision: 1
+
+  # Fast level signal for the overflow alert; filters the brief raw spikes.
+  - platform: filter
+    name: Coolant level 5m mean
+    unique_id: coolant_level_5m_mean
+    entity_id: sensor.coolant_level_bench
+    filters:
+      - filter: time_simple_moving_average
+        window_size: "00:05:00"
+        type: last
+        precision: 1
+
+  - platform: derivative
+    name: Coolant level 1h mean slope
+    unique_id: coolant_level_1h_mean_slope
+    source: sensor.coolant_level_1h_mean
+    round: 2
+    unit_time: h
+    time_window: "00:15:00"
+    max_sub_interval: "00:05:00"
+
+  # Fill budget input. Named so the entity ID matches ours, which was
+  # created attached to the MiniPLC device.
+  - platform: statistics
+    name: UMC 500 Coolant MiniPLC Coolant water added last 24h
+    unique_id: coolant_water_added_last_24h
+    entity_id: sensor.homemaster_miniplc_xxxxxx_wld_1_flow2_total
+    state_characteristic: change
+    sampling_size: 20000
+    max_age:
+      hours: 24
+    keep_last_sample: true
+    precision: 2
+
+  - platform: statistics
+    name: UMC 500 Coolant MiniPLC Coolant concentrate added last 24h
+    unique_id: coolant_concentrate_added_last_24h
+    entity_id: sensor.homemaster_miniplc_xxxxxx_wld_1_flow1_total
+    state_characteristic: change
+    sampling_size: 20000
+    max_age:
+      hours: 24
+    keep_last_sample: true
+    precision: 3
+
+  # "Brix settled" check for the dose indicator (< 0.03 Brix).
+  - platform: statistics
+    name: Coolant Brix 15m stdev
+    unique_id: coolant_brix_15m_stdev
+    entity_id: sensor.coolant_brix_bench
+    state_characteristic: standard_deviation
+    sampling_size: 2000
+    max_age:
+      minutes: 15
+    keep_last_sample: true
+    precision: 3
+
+  - platform: filter
+    name: Coolant temperature 15m mean
+    unique_id: coolant_temperature_15m_mean
+    entity_id: sensor.coolant_temperature
+    filters:
+      - filter: time_simple_moving_average
+        window_size: "00:15:00"
+        type: last
+        precision: 2
+
+  # Seconds of conveyor wash in the last 10 min; > 0 = "wash seen".
+  - platform: history_stats
+    name: Conveyor wash time last 10 min
+    unique_id: conveyor_wash_time_last_10_min
+    entity_id: binary_sensor.conveyor_wash_active
+    state: "on"
+    type: time
+    start: "{{ now() - timedelta(minutes=10) }}"
+    end: "{{ now() }}"
+
+binary_sensor:
+  # On while the 1h mean rises faster than 0.5 mm/h (0.000139 mm/s) over
+  # 30 min. Blocks fills during drain-back, can returns, and after a fill.
+  - platform: trend
+    sensors:
+      coolant_level_rising:
+        entity_id: sensor.coolant_level_1h_mean
+        sample_duration: 1800
+        max_samples: 2000
+        min_samples: 10
+        min_gradient: 0.000139
+        invert: false
+
+  # Conveyor wash pump running = its filter's upstream pressure above 5 psi.
+  - platform: threshold
+    name: Conveyor wash active
+    unique_id: conveyor_wash_active
+    entity_id: sensor.umc_500_coolant_miniplc_conveyor_filter_upstream_pressure
+    upper: 5.0
+    hysteresis: 0.0
+
+input_number:
+  # Running-frame setpoints. Ours are currently trigger 109 / target 115 mm
+  # (on a tank where 153 mm is "100%" and the lip is ~197 mm).
+  coolant_fill_trigger:
+    name: Coolant fill trigger
+    icon: mdi:arrow-collapse-down
+    min: 0
+    max: 153
+    step: 1
+    unit_of_measurement: mm
+    mode: box
+  coolant_fill_target:
+    name: Coolant fill target
+    icon: mdi:arrow-collapse-up
+    min: 0
+    max: 153
+    step: 1
+    unit_of_measurement: mm
+    mode: box
+
+input_datetime:
+  coolant_concentrate_pump_turned_on_at:
+    name: Coolant concentrate pump turned on at
+    icon: mdi:clock-start
+    has_date: true
+    has_time: true
+  shop_water_pump_turned_on_at:
+    name: Shop water pump turned on at
+    icon: mdi:clock-start
+    has_date: true
+    has_time: true
+  # Set by hand after each manual concentrate dose (4 h dose lockout).
+  coolant_last_concentrate_dose:
+    name: Coolant last concentrate dose
+    icon: mdi:flask-plus
+    has_date: true
+    has_time: true
+
+schedule:
+  shop_staffed:
+    name: Shop staffed
+    icon: mdi:account-hard-hat
+    monday:
+      - from: "06:30:00"
+        to: "16:00:00"
+    tuesday:
+      - from: "06:30:00"
+        to: "16:00:00"
+    wednesday:
+      - from: "06:30:00"
+        to: "16:00:00"
+    thursday:
+      - from: "06:30:00"
+        to: "16:00:00"
+    friday:
+      - from: "06:30:00"
+        to: "16:00:00"

@@ -1,0 +1,7 @@
+# Never commit real credentials
+secrets.yaml
+*.secrets.yaml
+.esphome/
+
+# Unsanitised Home Assistant exports - never commit
+config/home-assistant/raw/

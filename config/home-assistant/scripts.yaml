@@ -1,0 +1,138 @@
+# Coolant system scripts — exported from our Home Assistant (2026.10.1), where
+# they were created in the UI. Sanitised: phone notify service and the
+# MiniPLC's MAC-derived entity prefix replaced with placeholders.
+#
+# Placeholders to change for your system:
+#   notify.mobile_app_your_phone        -> your notify service
+#   homemaster_miniplc_xxxxxx_          -> your MiniPLC's entity prefix
+#   switch.shop_water_pump_switch       -> your water supply pump switch
+#   schedule.shop_staffed               -> your staffed-hours schedule
+
+coolant_metered_water_fill:
+  alias: Coolant — metered water fill
+  description: 'Metered water fill for the UMC 500 coolant tank (WLD relay 2 = water valve; flow2 = water meter, reported in gal). Volume computed once at start: (input_number.coolant_fill_target − sensor.coolant_level_1h_mean) × 0.55 gal/mm, capped at 5 gal / 18.9 L (2026-10-18: lowered from 10 gal — measured flow is ≈4.2–4.4 L/min, not 4.8, and a 6-gal capped fill ran 5 min 28 s, only 32 s inside the MiniPLC''s 6-min valve watchdog; 5 gal ≈ 4.5 min leaves ≈1.5 min margin); skips if < 1 L. Turns the shop water pump (switch.shop_water_pump_switch) on and waits 5 s for pressure; aborts if no flow within 20 s; stops at metered volume or a timeout of 1.5× expected time (4.8 L/min) + 30 s; always closes the valve; outside staffed hours turns the water pump back off afterwards (the pump automation''s 30-min after-hours limit is the backstop). Notifies the phone at start and end. Created 2026-10-16; water pump control added 2026-10-16.'
+  icon: mdi:water-plus
+  mode: single
+  sequence:
+  - variables:
+      mean_mm: "{{ states('sensor.coolant_level_1h_mean') | float(0) }}"
+      start_l: "{{ states('sensor.homemaster_miniplc_xxxxxx_wld_1_flow2_total') | float(0) * 3.785411784 }}"
+      target_mm: "{{ states('input_number.coolant_fill_target') | float(0) }}"
+      vol_l: "{{ [((states('input_number.coolant_fill_target') | float(0)) - (states('sensor.coolant_level_1h_mean') | float(0))) * 0.55 * 3.785411784, 18.9] | min | round(1) }}"
+  - if:
+    - condition: template
+      value_template: "{{ vol_l < 1.0 }}"
+    then:
+    - action: notify.mobile_app_your_phone
+      data:
+        message: "1h mean {{ mean_mm | round(1) }} mm is already near target {{ target_mm | int(0) }} mm — nothing to add."
+        title: Coolant fill skipped
+    - stop: Volume below 1 L
+  - variables:
+      timeout_s: "{{ (vol_l / 4.8 * 60 * 1.5 + 30) | round(0) }}"
+  - action: notify.mobile_app_your_phone
+    data:
+      message: "UMC 500: adding {{ vol_l }} L ({{ (vol_l / 3.785411784) | round(1) }} gal) of water. 1h mean {{ mean_mm | round(1) }} mm → target {{ target_mm | int(0) }} mm. Timeout {{ timeout_s }} s."
+      title: Coolant fill STARTING
+  - action: switch.turn_on
+    target:
+      entity_id: switch.shop_water_pump_switch
+  - delay:
+      seconds: 5
+  - action: switch.turn_on
+    target:
+      entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_2
+  - delay:
+      seconds: 20
+  - if:
+    - condition: template
+      value_template: "{{ (states('sensor.homemaster_miniplc_xxxxxx_wld_1_flow2_total') | float(0) * 3.785411784 - start_l) < 0.1 }}"
+    then:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_2
+    - if:
+      - condition: state
+        entity_id: schedule.shop_staffed
+        state: 'off'
+      then:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.shop_water_pump_switch
+    - action: notify.mobile_app_your_phone
+      data:
+        message: Valve opened but no water flow in 20 s. Valve closed. Check the water supply/pump.
+        title: Coolant fill ABORTED — no flow
+    - error: true
+      stop: No flow
+  - continue_on_timeout: true
+    timeout:
+      seconds: "{{ timeout_s }}"
+    wait_template: "{{ (states('sensor.homemaster_miniplc_xxxxxx_wld_1_flow2_total') | float(0) * 3.785411784 - start_l) >= vol_l }}"
+  - variables:
+      reached: "{{ wait.completed }}"
+  - action: switch.turn_off
+    target:
+      entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_2
+  - if:
+    - condition: state
+      entity_id: schedule.shop_staffed
+      state: 'off'
+    then:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.shop_water_pump_switch
+  - delay:
+      seconds: 10
+  - action: notify.mobile_app_your_phone
+    data:
+      message: "UMC 500: delivered {{ (states('sensor.homemaster_miniplc_xxxxxx_wld_1_flow2_total') | float(0) * 3.785411784 - start_l) | round(2) }} L of {{ vol_l }} L planned. Valve closed (relay 2: {{ states('switch.homemaster_miniplc_xxxxxx_wld_1_relay_2') }}). Water pump: {{ states('switch.shop_water_pump_switch') }}."
+      title: "{{ 'Coolant fill complete' if reached else 'Coolant fill TIMED OUT' }}"
+
+# Commissioning scripts: prove valve wiring, plug LEDs and relay numbering.
+# 1 s pulses prove actuation only — the flow meter won't register them.
+valve_test_wld_relay_1:
+  alias: Valve test — WLD relay 1 (5 pulses)
+  description: 'Commissioning test for valve wiring: pulses WLD relay 1 five times, 1 s on / 1 s off, and always ends OFF (final turn_off is deliberate). Created 2026-10-13. If stopped mid-run, check the relay is off.'
+  icon: mdi:valve
+  mode: single
+  sequence:
+  - repeat:
+      count: 5
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_1
+      - delay:
+          seconds: 1
+      - action: switch.turn_off
+        target:
+          entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_1
+      - delay:
+          seconds: 1
+  - action: switch.turn_off
+    target:
+      entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_1
+
+valve_test_wld_relay_2:
+  alias: Valve test — WLD relay 2 (5 pulses)
+  description: 'Commissioning test for valve wiring: pulses WLD relay 2 five times, 1 s on / 1 s off, and always ends OFF (final turn_off is deliberate). Created 2026-10-13. If stopped mid-run, check the relay is off.'
+  icon: mdi:valve
+  mode: single
+  sequence:
+  - repeat:
+      count: 5
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_2
+      - delay:
+          seconds: 1
+      - action: switch.turn_off
+        target:
+          entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_2
+      - delay:
+          seconds: 1
+  - action: switch.turn_off
+    target:
+      entity_id: switch.homemaster_miniplc_xxxxxx_wld_1_relay_2

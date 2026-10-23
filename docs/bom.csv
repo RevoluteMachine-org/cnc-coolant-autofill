@@ -1,0 +1,35 @@
+category,item,part_number,manufacturer,supplier,unit_price_usd,price_date,qty_per_build,notes
+Keyence sensors,Clamp-on flow sensor (one per line),FD-H10,Keyence,Keyence,,,2,"Keyence set ~$2,000 total (all Keyence rows, Sept 2026); ask Keyence for a quote"
+Keyence sensors,Flow sensor power/IO cable M12 8-pin 2 m,FD-HCB2,Keyence,Keyence,,,2,
+Keyence sensors,Digital refractometer probe,FI-C20D,Keyence,Keyence,,,1,Plugs into FD-H #1 Multi-port
+Keyence sensors,Refractometer bracket,FI-CDB1,Keyence,Keyence,,,1,
+Keyence sensors,Radar level sensor short-range,FR-S01,Keyence,Keyence,,,1,Mount >= 300 mm above highest level
+Keyence sensors,Radar side-mount bracket SUS304,OP-88873,Keyence,Keyence,,,1,Open tanks
+Keyence sensors,Cable M12 8-pin to M12 4-pin 2 m,OP-88444,Keyence,Keyence,,,1,Puts the radar on FD-H #2 Multi-port
+Controller and I/O,MiniPLC (ESP32 DIN-rail PLC; ESPHome; Ethernet; RS-485),HM-MINIPLC,HomeMaster,home-master.eu,260.00,2026-09,1,CE-marked; not UL listed / FCC certified; ships from Romania; duties extra
+Controller and I/O,Analog I/O + RTD module (4x 0-10 V in),HM-AIO-422-R1,HomeMaster,home-master.eu,120.00,2026-09,1,4-20 mA via external 499 ohm shunt
+Controller and I/O,Water meter/leak module (5 inputs; 2 relays),HM-WLD-521-R1,HomeMaster,home-master.eu,80.00,2026-09,1,Inputs need voltage applied (see docs/lessons.md)
+Controller and I/O,Interposing relay SPDT 24 VAC/DC coil DIN,KPR-SCS-24VACDC-1,Klemsan,AutomationDirect,9.50,2026-10,2,
+Controller and I/O,"Shunt resistor 499 ohm 1% 1/2 W",RNF12FTD499R,Stackpole,DigiKey,,,4,"1/2 W recommended for margin; our panel has 1/4 W RNF14FTD499R ($0.03 ea), fine at normal signal levels"
+Controller and I/O,24 VDC power supply 5 A DIN,NDR-120-24,Mean Well,,,,1,Price not recorded
+Other sensors,Pressure transmitter 0-100 psig 4-20 mA 1/4 NPT M12,SPTD25-20-0100H,ProSense,AutomationDirect,133.00,2026-10,4,Optional: filter monitoring (2 per filter). Conveyor-filter upstream pressure is used to detect the conveyor wash
+Other sensors,RTD Pt100 6 mm 1/4 NPT M12 150 mm,RTD1-25N-150-H,ProSense,AutomationDirect,82.00,2026-10,1,Our first build has the 100 mm RTD1-25N-100-H; use 150 mm
+Other sensors,Float level switch 1/4 NPT reed,FLS-VL-600,AutomationDirect,AutomationDirect,96.00,2026-10,1,High-level backstop on WLD I5
+Valves,Solenoid valve 2-way NC 1/4 FNPT brass/FKM 24 VDC DIN plug,6100-6H001-AAB3C-A,Spartan Scientific,AutomationDirect,80.00,2026-10,2,Water + concentrate; downstream of the flow meter
+Valves,Valve plug DIN 43650 Form A 18 mm with LED + surge suppression,SC18-LS24-0,Murrelektronik,AutomationDirect,12.50,2026-10,2,Murrelektronik 7231-29021-0000000
+Cables and connectors,M12 bulkhead 4-pin female to 1 m pigtail,7231-13541-9710100,Murrelektronik,AutomationDirect,13.50,2026-10,10,"Our panel: 8 bottom + 2 side; some are the 0.5 m 7231-13541-9710050 ($12.50)"
+Cables and connectors,M12 cable 4-pole F-M 1 m PVC IP67,CDP12-0B-010-AA,AutomationDirect,AutomationDirect,12.50,2026-10,4,Pressure transmitters
+Cables and connectors,M12 cable 4-pole F-M 3 m PVC IP67,CDP12-0B-030-AA,AutomationDirect,AutomationDirect,12.50,2026-10,1,RTD
+Cables and connectors,M12 male to pigtail 4-pole 5 m,7000-12021-2140500,Murrelektronik,AutomationDirect,11.50,2026-10,2,To the valve plugs
+Cables and connectors,Ethernet bulkhead RJ45 CAT6 waterproof with cap (10-pack),ANMBEST,ANMBEST,Amazon,39.89,2026-10-08,1,Price is per 10-pack
+Enclosure and panel,"Enclosure IP67 ABS 20.1 x 16.1 x 7.9 in with DIN rail + mounting plate",ASIN B0F18ZLXS3,Joisyoya,Amazon,109.99,2026-10-22,1,Was $93.99 on 2026-08-28
+Enclosure and panel,"Slotted wire duct with cover 1.6 x 1.2 in grey (6 x 16.5 in)",ASIN B0DG8WJ9YT,ZhiYo,Amazon,18.99,2026-10-23,1,Per 6-pack; cut to fit
+Enclosure and panel,Feed-through terminal block push-in 10-24 AWG,3211757,Phoenix Contact,DigiKey,1.73,2026-09-04,45,Approx. count; terminal block line not yet standardised (see bom.md)
+Enclosure and panel,Jumper 2-position,3030336,Phoenix Contact,DigiKey,0.57,2026-09-04,,As needed; must match the block family
+Enclosure and panel,Fuse terminal block,281-611,WAGO,DigiKey,21.15,2026-09-04,1,4 A fuse on our panel; next build add one per valve
+Enclosure and panel,DIN rail 35 x 7.5 mm slotted aluminium 19 in,PFP-50N,Omron,DigiKey,11.89,2026-09-04,1,Beyond the rail included with the enclosure
+Enclosure and panel,Ferrules 18 AWG single/twin; 20 AWG,V30AE000013 / V30AE000608 / V30AE000006,Z+F,AutomationDirect,,,,Consumable
+Enclosure and panel,Adhesive heat shrink 3/16 in and 1/2 in,115-10008 / 115-10079,Sumitomo,AutomationDirect,,,,Consumable
+Pump control,Smart plug (pump on/off + power metering),Plug US Gen4,Shelly,Amazon,,,2,One per supply pump; shared pumps need only one set for several machines
+Per-machine mechanical,Measurement nipple 1/4 NPT x 12 in 304/304L Sch 40 seamless,4830K142,McMaster-Carr,McMaster-Carr,,,2,One per flow meter
+Per-machine mechanical,Float + RTD bracket; radar mount; refractometer adapter; fittings,,,,,,,Designed per machine

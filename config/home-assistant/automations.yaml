@@ -1,0 +1,266 @@
+# Coolant system automations — exported from our Home Assistant (2026.10.1),
+# where they were created in the UI. Sanitised: phone notify service, the
+# MiniPLC's MAC-derived entity prefix and internal links replaced; UI ids
+# replaced with readable ones.
+#
+# Placeholders to change for your system:
+#   notify.mobile_app_your_phone        -> your notify service (critical alerts
+#                                          below use the iOS companion app format)
+#   switch.coolant_concentrate_pump,
+#   switch.shop_water_pump_switch       -> your supply pump switches
+#   schedule.shop_staffed               -> your staffed-hours schedule
+
+- id: coolant_automatic_water_fill
+  alias: Coolant — automatic water fill
+  description: 'AUTOMATIC water fill for the UMC 500 coolant tank (enabled 2026-10-16 for weekend running, a conscious step past the red-team gate with residual risks accepted by Brad). Fires when binary_sensor.fill_would_trigger_observe_only has been on 2 min (debounce), re-checks every 15 min. Fill budget: ≥ 2 h since the fill script last ran AND < 36 gal added in the last 24 h (budget 40 gal; ~32 gal/day is the fastest consumption seen). Budget block → phone notification, no fill. The fill itself (script.coolant_metered_water_fill) meters, times out, aborts on no flow, controls the water pump and notifies; the MiniPLC valve watchdog (6 min) backs it up if Home Assistant fails mid-fill.'
+  triggers:
+  - entity_id: binary_sensor.fill_would_trigger_observe_only
+    for:
+      minutes: 2
+    to: 'on'
+    trigger: state
+  - minutes: /15
+    trigger: time_pattern
+  conditions:
+  - condition: state
+    entity_id: binary_sensor.fill_would_trigger_observe_only
+    state: 'on'
+  - condition: state
+    entity_id: script.coolant_metered_water_fill
+    state: 'off'
+  actions:
+  - choose:
+    - conditions:
+      - below: 36
+        condition: numeric_state
+        entity_id: sensor.umc_500_coolant_miniplc_coolant_water_added_last_24h
+      - condition: template
+        value_template: "{% set lt = state_attr('script.coolant_metered_water_fill', 'last_triggered') %}{{ lt is none or (now() - lt).total_seconds() >= 7200 }}"
+      sequence:
+      - action: script.turn_on
+        target:
+          entity_id: script.coolant_metered_water_fill
+    - conditions:
+      - above: 35.99
+        condition: numeric_state
+        entity_id: sensor.umc_500_coolant_miniplc_coolant_water_added_last_24h
+      sequence:
+      - action: notify.mobile_app_your_phone
+        data:
+          message: "UMC 500 wants a fill, but {{ states('sensor.umc_500_coolant_miniplc_coolant_water_added_last_24h') }} gal of water already went in over the last 24 h (budget 40). Not filling. Check the tank/level sensor — consumption faster than physics suggests a leak or a lying level reading."
+          title: Coolant fill BLOCKED — 24 h budget
+  max_exceeded: silent
+  mode: single
+
+- id: coolant_level_and_valve_alerts
+  alias: Coolant — level and valve alerts
+  description: 'Phone alerts for the UMC 500 coolant system. OVERFLOW RISK (critical, breaks through Do Not Disturb): sensor.coolant_level_5m_mean above 145 mm for 3 min — a fast signal (the 1h mean lagged a real rise by ~1 h on 2026-10-19); the 5-min average filters the brief 25–40 mm raw spikes seen while running. ABOVE BAND (normal): 1h mean above 135 mm for 5 min — raised from 125 on 2026-10-22 (Brad) because a routine stop now parks the tank at ~120–131 mm after drain-back (10-22: fill 23:56, stop 00:30, idle crept 123→125.5 mm and the 125 alert fired at ~04:15). VALVE WATCHDOG tripped (critical). LOW (normal): 1h mean below 80 mm for 5 min, repeated every 30 min while low. Split into tiers 2026-10-19.'
+  triggers:
+  - above: 145
+    entity_id: sensor.coolant_level_5m_mean
+    for:
+      minutes: 3
+    id: overflow
+    trigger: numeric_state
+  - above: 135
+    entity_id: sensor.coolant_level_1h_mean
+    for:
+      minutes: 5
+    id: above_band
+    trigger: numeric_state
+  - entity_id: binary_sensor.umc_500_coolant_miniplc_valve_watchdog_tripped
+    from: 'off'
+    id: watchdog
+    to: 'on'
+    trigger: state
+  - below: 80
+    entity_id: sensor.coolant_level_1h_mean
+    for:
+      minutes: 5
+    id: low
+    trigger: numeric_state
+  - id: low_repeat
+    minutes: /30
+    trigger: time_pattern
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - overflow
+      sequence:
+      - action: notify.mobile_app_your_phone
+        data:
+          data:
+            push:
+              sound:
+                critical: 1
+                name: default
+                volume: 1
+          message: "UMC 500 coolant 5-min average is {{ states('sensor.coolant_level_5m_mean') }} mm (alert above 145; 100% full = 153; lip ≈ 197). Possible overflow. Check the tank camera; stop fills by turning off WLD #1 Relay 2 / the water pump."
+          title: ⚠️ COOLANT OVERFLOW RISK
+    - conditions:
+      - condition: trigger
+        id:
+        - above_band
+      sequence:
+      - action: notify.mobile_app_your_phone
+        data:
+          message: "UMC 500 coolant 1h mean is {{ states('sensor.coolant_level_1h_mean') }} mm, above 135 mm. Not dangerous on its own (overflow alert is separate, at 145 mm on the 5-min average). Normal idle after drain-back is ~120–131 mm; this is higher — maybe a barrel return on top of drain-back."
+          title: Coolant above band
+    - conditions:
+      - condition: trigger
+        id:
+        - watchdog
+      sequence:
+      - action: notify.mobile_app_your_phone
+        data:
+          data:
+            push:
+              sound:
+                critical: 1
+                name: default
+                volume: 1
+          message: "The MiniPLC force-closed a coolant valve that stayed open too long (water > 6 min or concentrate > 3 min). Something kept it open — check the tank, then press 'Valve watchdog reset'."
+          title: ⚠️ COOLANT VALVE WATCHDOG TRIPPED
+    - conditions:
+      - condition: trigger
+        id:
+        - low
+        - low_repeat
+      - below: 80
+        condition: numeric_state
+        entity_id: sensor.coolant_level_1h_mean
+      sequence:
+      - action: notify.mobile_app_your_phone
+        data:
+          message: "UMC 500 coolant 1h mean is {{ states('sensor.coolant_level_1h_mean') }} mm (alert below 80). Fills may be blocked — check the permissive panel (conveyor wash? machine running?) and the tank camera."
+          title: Coolant level LOW
+  max: 5
+  mode: queued
+
+- id: coolant_concentrate_pump_staffed_hours
+  alias: Coolant concentrate pump — staffed hours + 30 min after-hours limit
+  description: 'Shop-wide concentrate pump (Shelly plug). On at the start of staffed hours (schedule.shop_staffed), off at the end. Outside staffed hours, any turn-on (plug button, dashboard, or a future automated fill) is limited to 30 minutes: the turn-on time is stamped in input_datetime.coolant_concentrate_pump_turned_on_at and a once-a-minute check turns the pump off after 30 min. Stamp + check instead of a ''for: 30 min'' trigger so a Home Assistant restart or a Wi-Fi blip on the plug can''t reset the clock. If the stamp is missing, an after-hours ''on'' is turned off at the next check (fail toward off). Limitation: depends on Home Assistant running. Created 2026-10-15; see docs/safety.md (valve stuck open).'
+  triggers:
+  - entity_id: schedule.shop_staffed
+    id: staffed_start
+    to: 'on'
+    trigger: state
+  - entity_id: schedule.shop_staffed
+    id: staffed_end
+    to: 'off'
+    trigger: state
+  - entity_id: switch.coolant_concentrate_pump
+    from: 'off'
+    id: pump_on
+    to: 'on'
+    trigger: state
+  - id: watchdog
+    minutes: /1
+    trigger: time_pattern
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: staffed_start
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.coolant_concentrate_pump
+    - conditions:
+      - condition: trigger
+        id: staffed_end
+      sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.coolant_concentrate_pump
+    - conditions:
+      - condition: trigger
+        id: pump_on
+      sequence:
+      - action: input_datetime.set_datetime
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        target:
+          entity_id: input_datetime.coolant_concentrate_pump_turned_on_at
+    - conditions:
+      - condition: trigger
+        id: watchdog
+      - condition: state
+        entity_id: schedule.shop_staffed
+        state: 'off'
+      - condition: state
+        entity_id: switch.coolant_concentrate_pump
+        state: 'on'
+      - condition: template
+        value_template: "{% set t = state_attr('input_datetime.coolant_concentrate_pump_turned_on_at', 'timestamp') %}{{ t is none or (now().timestamp() - t) >= 1800 }}"
+      sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.coolant_concentrate_pump
+  max: 5
+  mode: queued
+
+- id: shop_water_pump_staffed_hours
+  alias: Shop water pump — staffed hours + 30 min after-hours limit
+  description: 'Shop-wide water pump (Shelly plug, switch.shop_water_pump_switch). Same logic as the concentrate pump automation: on at the start of staffed hours (schedule.shop_staffed), off at the end; outside staffed hours any turn-on (plug button, dashboard, or the fill script) is limited to 30 min via a stamped turn-on time (input_datetime.shop_water_pump_turned_on_at) and a once-a-minute check — restart- and Wi-Fi-blip-proof, fails toward off. Depends on Home Assistant running. Created 2026-10-16; see docs/safety.md (valve stuck open).'
+  triggers:
+  - entity_id: schedule.shop_staffed
+    id: staffed_start
+    to: 'on'
+    trigger: state
+  - entity_id: schedule.shop_staffed
+    id: staffed_end
+    to: 'off'
+    trigger: state
+  - entity_id: switch.shop_water_pump_switch
+    from: 'off'
+    id: pump_on
+    to: 'on'
+    trigger: state
+  - id: watchdog
+    minutes: /1
+    trigger: time_pattern
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: staffed_start
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.shop_water_pump_switch
+    - conditions:
+      - condition: trigger
+        id: staffed_end
+      sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.shop_water_pump_switch
+    - conditions:
+      - condition: trigger
+        id: pump_on
+      sequence:
+      - action: input_datetime.set_datetime
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+        target:
+          entity_id: input_datetime.shop_water_pump_turned_on_at
+    - conditions:
+      - condition: trigger
+        id: watchdog
+      - condition: state
+        entity_id: schedule.shop_staffed
+        state: 'off'
+      - condition: state
+        entity_id: switch.shop_water_pump_switch
+        state: 'on'
+      - condition: template
+        value_template: "{% set t = state_attr('input_datetime.shop_water_pump_turned_on_at', 'timestamp') %}{{ t is none or (now().timestamp() - t) >= 1800 }}"
+      sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.shop_water_pump_switch
+  max: 5
+  mode: queued

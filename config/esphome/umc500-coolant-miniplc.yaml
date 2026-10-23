@@ -1,0 +1,659 @@
+# UMC 500 coolant MiniPLC — the ESPHome config running on our controller,
+# published as an example. See config/esphome/README.md before using it.
+#
+# Not included here: Wi-Fi, API encryption and OTA passwords. Our controller
+# is on wired Ethernet. If you copy this, add an API encryption key and an
+# OTA password from your own secrets.yaml, e.g.
+#   api:
+#     encryption:
+#       key: !secret api_encryption_key
+#   ota:
+#     - platform: esphome
+#       password: !secret ota_password
+
+esphome:
+  name: umc500-coolant-miniplc
+  friendly_name: UMC 500 Coolant MiniPLC
+  comment: UMC 500 coolant management — HomeMaster MiniPLC
+  min_version: 2025.7.0
+  name_add_mac_suffix: false
+  project:
+    name: homemaster.miniplc
+    version: 1.0.0
+  # >>> ADDED 2026-10-16 — fail-closed on controller restart.
+  # Whatever the valves were doing before a reboot, start with both closed.
+  # (Interrupts a fill in progress if the MiniPLC restarts — deliberate:
+  # fail toward closed. The fill script's timeout/notification covers it.)
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_off: wld_1_relay1_coil
+      - switch.turn_off: wld_1_relay2_coil
+  # <<< END ADDED
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    version: recommended
+
+logger:
+  baud_rate: 115200
+
+api:
+
+web_server:
+  port: 80
+  version: 3
+  ota: false
+
+http_request:
+  id: http_request_data
+
+ota:
+- platform: esphome
+  id: ota_esphome
+- platform: http_request
+  id: ota_http_request
+
+update:
+- platform: http_request
+  id: firmware_update
+  name: Firmware Update
+  source: 
+    https://isystemsautomation.github.io/homemaster-dev/MiniPLC/Firmware/manifest.json
+  update_interval: 6h
+
+#wifi:
+#  ap: {}
+#  on_connect:
+#    then:
+#    - delay: 10s
+#    - component.update: firmware_update
+
+#captive_portal:
+
+#improv_serial:
+
+#esp32_improv:
+#  authorizer: none
+
+dashboard_import:
+  package_import_url: 
+    github://isystemsautomation/homemaster-dev/MiniPLC/Firmware/miniplc.yaml@main
+  import_full_config: true
+
+# Optional wired Ethernet (LAN8720 PHY)
+# NOTE: clk_mode is deprecated as of ESPHome 2026.1 — touch this on upgrade.
+ethernet:
+  type: LAN8720
+  id: eth_phy
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk_mode: GPIO0_OUT
+  phy_addr: 1
+
+# RS-485 / Modbus RTU bus.
+uart:
+  id: uart_modbus
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 19200
+
+# Modbus RTU master over the RS-485 UART above.
+# The HomeMaster packages hardcode `modbus_id: modbus_bus` — keep this id,
+# and do not declare a second modbus_controller for any packaged module.
+#
+# UPGRADE COUPLING: turnaround_time / send_wait_time do NOT exist on the
+# installed ESPHome 2025.12.5 (invalid-option error). They were introduced in
+# 2026.7.0, which also raised the defaults to 600ms / 2000ms. When ESPHome is
+# upgraded past 2026.7.0, add both options here IN THE SAME CHANGE, set to the
+# old defaults, or the bus silently slows and can starve modules.
+modbus:
+  id: modbus_bus
+  uart_id: uart_modbus
+
+# HomeMaster expansion modules on the RS-485 bus.
+#
+# Each package path MUST match the firmware version actually on that module.
+# v0.1.0 and v0.2.0 register maps are not drop-in compatible.
+#
+#   AIO-422-R1  = 3  firmware v0.2.0 (flashed 2026-10-06)  -> v0.2.0 package
+#   WLD-521-R1  = 4  firmware v0.1.0 (no v0.2.0 UF2 published) -> v0.1.0 package
+#
+# Addresses read from each module's WebConfig — the READMEs' stated defaults
+# have been wrong twice, so always read the module rather than trust docs.
+# The ENM-223-R1 (formerly address 4) is removed from this panel.
+packages:
+  wld_1:
+    url: https://github.com/isystemsautomation/homemaster-dev
+    ref: main
+    files:
+    - path: WLD-521-R1/Firmware/v0.1.0/default_wld_521_r1_plc/default_wld_521_r1_plc.yaml
+      vars:
+        wld_id: wld_1
+        wld_address: "4"
+        wld_prefix: "WLD #1"
+  aio_1:
+    url: https://github.com/isystemsautomation/homemaster-dev
+    ref: main
+    files:
+    - path: AIO-422-R1/Firmware/v0.2.0/default_aio_422_r1_plc/default_aio_422_r1_plc.yaml
+      vars:
+        aio_id: aio_1
+        aio_address: "3"
+        aio_prefix: "AIO #1"
+
+# >>> ADDED 2026-10-16 — VALVE WATCHDOG (runs on the MiniPLC; works with HA down)
+# ============================================================================
+# If a WLD valve relay is reported ON longer than its limit, force it OFF and
+# keep forcing it every 5 s until the WLD reports it off. Limits sit well above
+# a normal fill (~3 min water) but far below "flood the tank":
+#   Relay 2 (water valve)       — 6 min  (~8 gal at 4.8 L/min worst case)
+#   Relay 1 (concentrate valve) — 3 min
+# Uses the WLD's REPORTED relay state (wld_1_rlyN_state, read over Modbus) so
+# it reacts to what the relay is actually doing. IDs come from the pinned
+# WLD-521-R1 v0.1.0 package. Limitation: if Modbus to the WLD is lost, the
+# state goes stale and the OFF write cannot land (the WLD has no comm-loss
+# failsafe — see docs/safety.md). millis() wrap (~49 days) is safe: unsigned math.
+# ============================================================================
+globals:
+  - id: wd_relay1_on_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: wd_relay2_on_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const uint32_t LIMIT_WATER_MS = 6UL * 60UL * 1000UL;   // relay 2
+          const uint32_t LIMIT_CONC_MS  = 3UL * 60UL * 1000UL;   // relay 1
+
+          // --- Relay 2: water valve ---
+          if (id(wld_1_rly2_state).state) {
+            if (id(wd_relay2_on_ms) == 0) {
+              id(wd_relay2_on_ms) = now == 0 ? 1 : now;
+            } else if ((now - id(wd_relay2_on_ms)) > LIMIT_WATER_MS) {
+              ESP_LOGW("valve_wd", "Relay 2 (water) ON > 6 min - forcing OFF");
+              id(wld_1_relay2_coil).turn_off();
+              id(valve_wd_tripped).publish_state(true);
+            }
+          } else {
+            id(wd_relay2_on_ms) = 0;
+          }
+
+          // --- Relay 1: concentrate valve ---
+          if (id(wld_1_rly1_state).state) {
+            if (id(wd_relay1_on_ms) == 0) {
+              id(wd_relay1_on_ms) = now == 0 ? 1 : now;
+            } else if ((now - id(wd_relay1_on_ms)) > LIMIT_CONC_MS) {
+              ESP_LOGW("valve_wd", "Relay 1 (concentrate) ON > 3 min - forcing OFF");
+              id(wld_1_relay1_coil).turn_off();
+              id(valve_wd_tripped).publish_state(true);
+            }
+          } else {
+            id(wd_relay1_on_ms) = 0;
+          }
+
+# Lets Home Assistant clear the watchdog flag after investigating.
+button:
+  - platform: template
+    id: valve_wd_reset
+    name: "Valve watchdog reset"
+    entity_category: config
+    on_press:
+      - lambda: id(valve_wd_tripped).publish_state(false);
+# <<< END ADDED
+
+i2c:
+- id: bus_a
+  sda: GPIO32
+  scl: GPIO33
+  frequency: 400kHz
+  timeout: 1s
+  scan: true
+spi:
+  miso_pin: GPIO12
+  mosi_pin: GPIO13
+  clk_pin: GPIO14
+one_wire:
+- platform: gpio
+  id: ow_bus_1
+  pin: GPIO5
+- platform: gpio
+  id: ow_bus_2
+  pin: GPIO4
+
+pcf8574:
+- id: pcf8574_hub_a
+  address: 0x20
+  pcf8575: false
+- id: pcf8574_hub_b
+  address: 0x21
+  pcf8575: false
+
+ads1115:
+- id: ads1115_hub
+  address: 0x48
+
+time:
+- platform: pcf8563
+  id: pcf8563_time
+  address: 0x51
+- platform: homeassistant
+  id: ha_time
+  on_time_sync:
+    then:
+    - pcf8563.write_time:
+
+font:
+- file: gfonts://Roboto
+  id: font_small
+  size: 8
+- file: gfonts://Roboto
+  id: font_large
+  size: 48
+- file: gfonts://Roboto
+  id: font_medium
+  size: 14
+
+display:
+- platform: ssd1306_i2c
+  id: oled_display
+  model: SH1106 128x64
+  address: 0x3C
+  rotation: 180
+  contrast: 100%
+  update_interval: 1s
+  lambda: |-
+    it.printf(64, 0, id(font_small), TextAlign::TOP_CENTER, "UMC 500 COOLANT");
+    it.strftime(0, 60, id(font_large), TextAlign::BASELINE_LEFT, "%H:%M", id(pcf8563_time).now());
+
+binary_sensor:
+- platform: status
+  id: esp_status
+  name: ESP Status
+  entity_category: diagnostic
+
+- platform: gpio
+  id: di_1
+  name: 'DI #1'
+  pin:
+    number: GPIO36
+- platform: gpio
+  id: di_2
+  name: 'DI #2'
+  pin:
+    number: GPIO39
+- platform: gpio
+  id: di_3
+  name: 'DI #3'
+  pin:
+    number: GPIO34
+- platform: gpio
+  id: di_4
+  name: 'DI #4'
+  pin:
+    number: GPIO35
+
+- platform: gpio
+  id: button_1
+  name: 'Button #1'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 0
+    inverted: true
+- platform: gpio
+  id: button_2
+  name: 'Button #2'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 1
+    inverted: true
+- platform: gpio
+  id: button_3
+  name: 'Button #3'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 2
+    inverted: true
+- platform: gpio
+  id: button_4
+  name: 'Button #4'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 3
+    inverted: true
+
+# >>> ADDED 2026-10-16 — latched ON when the valve watchdog forces a relay off.
+# Cleared by the "Valve watchdog reset" button (or a MiniPLC reboot).
+- platform: template
+  id: valve_wd_tripped
+  name: "Valve watchdog tripped"
+  device_class: problem
+# <<< END ADDED
+
+switch:
+- platform: gpio
+  id: relay_1
+  name: 'RELAY #1'
+  pin:
+    pcf8574: pcf8574_hub_b
+    number: 2
+    mode:
+      output: true
+    inverted: true
+- platform: gpio
+  id: relay_2
+  name: 'RELAY #2'
+  pin:
+    pcf8574: pcf8574_hub_b
+    number: 1
+    mode:
+      output: true
+    inverted: true
+- platform: gpio
+  id: relay_3
+  name: 'RELAY #3'
+  pin:
+    pcf8574: pcf8574_hub_b
+    number: 0
+    mode:
+      output: true
+    inverted: true
+- platform: gpio
+  id: relay_4
+  name: 'RELAY #4'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 6
+    mode:
+      output: true
+    inverted: true
+- platform: gpio
+  id: relay_5
+  name: 'RELAY #5'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 5
+    mode:
+      output: true
+    inverted: true
+- platform: gpio
+  id: relay_6
+  name: 'RELAY #6'
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 4
+    mode:
+      output: true
+    inverted: true
+
+- platform: gpio
+  id: led_2
+  name: 'LED #2'
+  pin:
+    pcf8574: pcf8574_hub_b
+    number: 3
+    mode:
+      output: true
+    inverted: true
+- platform: gpio
+  id: led_3
+  name: 'LED #3'
+  pin:
+    pcf8574: pcf8574_hub_b
+    number: 4
+    mode:
+      output: true
+    inverted: true
+
+- platform: template
+  id: buzzer_switch
+  name: Buzzer
+  optimistic: true
+  turn_on_action:
+  - output.turn_on: buzzer_output
+  - output.ledc.set_frequency:
+      id: buzzer_output
+      frequency: 2441Hz
+  - output.set_level:
+      id: buzzer_output
+      level: 75%
+  turn_off_action:
+  - output.turn_off: buzzer_output
+
+fan:
+- platform: speed
+  id: dac_fan
+  output: dac_output
+  name: DAC 0-10V
+
+sensor:
+- platform: uptime
+  id: esp_uptime
+  name: Uptime
+  update_interval: 60s
+  entity_category: diagnostic
+- platform: internal_temperature
+  id: esp32_temperature
+  name: ESP32 Temperature
+  update_interval: 60s
+  entity_category: diagnostic
+
+# ============================================================================
+# Filter pressure transmitters — MiniPLC analog inputs AI1–AI4 (2026-10-13)
+# ============================================================================
+# 4 × ProSense SPTD25-20-0100H (0–100 psig, 4–20 mA, 2-wire), each through a
+# 499 Ω shunt into a MiniPLC 0–10 V analog input.
+#
+#   Enclosure label   MiniPLC   Signal
+#   AI 0.1            AI1       Flood filter upstream      (F1 UP)
+#   AI 0.2            AI2       Flood filter downstream    (F1 DN)
+#   AI 0.3            AI3       Conveyor filter upstream   (F2 UP)
+#   AI 0.4            AI4       Conveyor filter downstream (F2 DN)
+#
+# Calibration — measured 2026-09-24, all four on one air manifold
+# (see docs/build-notes.md):
+#   zero (4 mA) volts:  AI1 1.986  AI2 1.996  AI3 1.993  AI4 2.005
+#   span: 100 psi = 7.984 V above zero (16 mA × 499 Ω)
+# Below ~3 mA (1.5 V) the loop is broken: report NaN, not a false low.
+# Gated averages use an INTERIM 5 psi "pump running" gate — tune later.
+# ============================================================================
+# --- Raw analog inputs (volts at the terminal) — diagnostics -------------
+- platform: ads1115
+  id: ai_1
+  ads1115_id: ads1115_hub
+  multiplexer: A3_GND
+  gain: 6.144
+  name: AI 1
+  update_interval: 5s
+  entity_category: diagnostic
+  filters:
+    - multiply: 3
+- platform: ads1115
+  id: ai_2
+  ads1115_id: ads1115_hub
+  multiplexer: A2_GND
+  gain: 6.144
+  name: AI 2
+  update_interval: 5s
+  entity_category: diagnostic
+  filters:
+    - multiply: 3
+- platform: ads1115
+  id: ai_3
+  ads1115_id: ads1115_hub
+  multiplexer: A1_GND
+  gain: 6.144
+  name: AI 3
+  update_interval: 5s
+  entity_category: diagnostic
+  filters:
+    - multiply: 3
+- platform: ads1115
+  id: ai_4
+  ads1115_id: ads1115_hub
+  multiplexer: A0_GND
+  gain: 6.144
+  name: AI 4
+  update_interval: 5s
+  entity_category: diagnostic
+  filters:
+    - multiply: 3
+
+# --- Pressures in psi ----------------------------------------------------
+- platform: template
+  name: "Flood filter upstream pressure"
+  id: flood_up_psi
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    const float v = id(ai_1).state;
+    if (isnan(v) || v < 1.5) return NAN;          // loop broken
+    return (v - 1.986) / 7.984 * 100.0;           // AI1 zero 1.986 V
+
+- platform: template
+  name: "Flood filter downstream pressure"
+  id: flood_dn_psi
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    const float v = id(ai_2).state;
+    if (isnan(v) || v < 1.5) return NAN;
+    return (v - 1.996) / 7.984 * 100.0;           // AI2 zero 1.996 V
+
+- platform: template
+  name: "Conveyor filter upstream pressure"
+  id: conveyor_up_psi
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    const float v = id(ai_3).state;
+    if (isnan(v) || v < 1.5) return NAN;
+    return (v - 1.993) / 7.984 * 100.0;           // AI3 zero 1.993 V
+
+- platform: template
+  name: "Conveyor filter downstream pressure"
+  id: conveyor_dn_psi
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    const float v = id(ai_4).state;
+    if (isnan(v) || v < 1.5) return NAN;
+    return (v - 2.005) / 7.984 * 100.0;           // AI4 zero 2.005 V
+
+# --- Instantaneous ΔP ----------------------------------------------------
+- platform: template
+  name: "Flood filter ΔP"
+  id: flood_dp
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    return id(flood_up_psi).state - id(flood_dn_psi).state;   // NaN propagates
+
+- platform: template
+  name: "Conveyor filter ΔP"
+  id: conveyor_dp
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    return id(conveyor_up_psi).state - id(conveyor_dn_psi).state;
+
+# --- Gated ΔP averages (only while that filter's pump is running) --------
+# Same pattern as the retired dual-pressure-differential-1 device:
+# a 9999 sentinel when gated off, filtered out before a 24-sample
+# (2-minute) moving average. These are what the dashboards should show.
+- platform: template
+  name: "Flood filter ΔP (running avg)"
+  id: flood_dp_avg
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    const float up = id(flood_up_psi).state;
+    if (isnan(up) || up <= 5.0) return 9999.0;   // pump off: interim 5 psi gate
+    return id(flood_dp).state;
+  filters:
+    - filter_out: 9999.0
+    - filter_out: nan
+    - sliding_window_moving_average:
+        window_size: 24
+        send_every: 1
+
+- platform: template
+  name: "Conveyor filter ΔP (running avg)"
+  id: conveyor_dp_avg
+  unit_of_measurement: "psi"
+  device_class: pressure
+  state_class: measurement
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    const float up = id(conveyor_up_psi).state;
+    if (isnan(up) || up <= 5.0) return 9999.0;   // pump off: interim 5 psi gate
+    return id(conveyor_dp).state;
+  filters:
+    - filter_out: 9999.0
+    - filter_out: nan
+    - sliding_window_moving_average:
+        window_size: 24
+        send_every: 1
+text_sensor:
+- platform: template
+  id: current_time
+  name: Current Time
+  entity_category: diagnostic
+  update_interval: 60s
+  lambda: |-
+    char str[17];
+    time_t currTime = id(pcf8563_time).now().timestamp;
+    strftime(str, sizeof(str), "%Y-%m-%d %H:%M", localtime(&currTime));
+    return { str };
+- platform: version
+  id: esphome_version
+  name: ESPHome Version
+  entity_category: diagnostic
+
+output:
+- platform: ledc
+  id: buzzer_output
+  pin: GPIO2
+- platform: mcp4725
+  id: dac_output
+  address: 0x60
+
+status_led:
+  id: st_led
+  pin:
+    pcf8574: pcf8574_hub_a
+    number: 7
+    mode:
+      output: true
+    inverted: false
