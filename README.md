@@ -27,14 +27,14 @@ refractometer in the tank at bottom right.*
 
 ## What it does
 
-```
- radar level ─┐                                         ┌─► water valve
- refractometer┼─► Keyence FD-H ─► HomeMaster ─► MiniPLC ─┤
- flow meters ─┘   flow sensors    AIO + WLD    (ESPHome) └─► concentrate valve
- filter pressures, RTD, float ────────────────►    │
-                                                   ▼
-                                            Home Assistant
-                                   (fill logic, alerts, pump control)
+```mermaid
+flowchart LR
+  sensors["Radar level<br/>Refractometer<br/>Flow meters"] --> fdh["Keyence FD-H<br/>flow sensors"]
+  fdh --> hm["HomeMaster<br/>AIO + WLD modules"]
+  other["Filter pressures<br/>RTD, float"] --> hm
+  hm <-->|Modbus| mini["MiniPLC<br/>(ESPHome)"]
+  hm --> valves["Water and<br/>concentrate valves"]
+  mini <--> ha["Home Assistant<br/>fill logic, alerts,<br/>pump control"]
 ```
 
 - **Watches** tank level (radar), coolant concentration (refractometer),

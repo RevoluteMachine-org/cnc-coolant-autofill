@@ -5,24 +5,38 @@ logic lives.
 
 ## Signal chain overview
 
-```
- SENSORS                        HUB / I/O                      CONTROLLER         SUPERVISION
- ───────                        ─────────                      ──────────         ───────────
- Radar level (FR-S01) ──┐
-                        ├─ FD-H #2 (water flow) ─┬─ 4–20 mA ─► AIO-422-R1 ─┐
- Water pipe ────────────┘                        ├─ pulses ──► WLD-521-R1 ─┤
-                                                 └─ error ───► WLD-521-R1 ─┤
- Refractometer (FI-C20D)┐                                                  │ Modbus RTU
-                        ├─ FD-H #1 (conc. flow) ─┬─ 4–20 mA ─► AIO-422-R1 ─┤ (RS-485)
- Concentrate pipe ──────┘                        ├─ pulses ──► WLD-521-R1 ─┤
-                                                 └─ error ───► WLD-521-R1 ─┼─► MiniPLC ──► Home Assistant
- RTD (Pt100) ─────────────────────────────────────────────────► AIO RTD1 ──┤   (ESPHome)   (fill logic,
- High-level float ────────────────────────────────────────────► WLD I5 ────┤               alerts, pumps)
- 4 × filter pressure transmitters ────────────────────────────► MiniPLC AI1–AI4
-                                                                             │
- Water valve ◄── interposing relay ◄── WLD relay 2 ◄─────────────────────────┤
- Concentrate valve ◄── interposing relay ◄── WLD relay 1 ◄───────────────────┘
- Shop water pump, concentrate pump ◄── smart plugs ◄── Home Assistant
+```mermaid
+flowchart LR
+  subgraph Sensors
+    radar["Radar level<br/>FR-S01"]
+    water["Water line"]
+    refr["Refractometer<br/>FI-C20D"]
+    conc["Concentrate line"]
+    rtd["RTD Pt100"]
+    float["High-level float"]
+    press["4 × filter pressure<br/>transmitters"]
+  end
+
+  radar --> fdh2["FD-H #2<br/>water flow"]
+  water --> fdh2
+  refr --> fdh1["FD-H #1<br/>concentrate flow"]
+  conc --> fdh1
+
+  fdh1 -->|"Brix 4–20 mA"| aio["AIO-422-R1"]
+  fdh2 -->|"level 4–20 mA"| aio
+  rtd --> aio
+  fdh1 -->|"pulses + health"| wld["WLD-521-R1"]
+  fdh2 -->|"pulses + health"| wld
+  float --> wld
+
+  aio <-->|"Modbus RTU"| mini["MiniPLC<br/>ESPHome"]
+  wld <-->|"Modbus RTU"| mini
+  press -->|"4–20 mA"| mini
+  mini <--> ha["Home Assistant<br/>fill logic, alerts"]
+
+  wld -->|"relay 2 → interposer"| wv["Water valve"]
+  wld -->|"relay 1 → interposer"| cv["Concentrate valve"]
+  ha -->|"smart plugs"| pumps["Supply pumps"]
 ```
 
 ## Sensors
