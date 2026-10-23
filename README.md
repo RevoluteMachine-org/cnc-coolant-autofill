@@ -53,6 +53,60 @@ fill criterion has its own tile; the level graph shows the raw sawtooth (light
 blue) and the 1-hour mean the logic actually uses (orange). The concentration
 graph shows each overnight fill as a step down.*
 
+## Prerequisites — what this builds on
+
+This repo covers the monitoring and fill control at the machine. It assumes
+some things were already in place in our shop. You'll need your own version of
+each.
+
+### Water and concentrate supply
+
+Both fluids reach the machine **pressurised, on demand**, from a small
+distribution system we built before this project:
+
+- **Water** is RO (reverse-osmosis) water. *TODO: RO system and storage.*
+- **Concentrate** is neat coolant concentrate drawn from a drum. *TODO: how
+  it's drawn from the drum.*
+- Each fluid has its own **120 V pressure pump** (SEAFLO 33-series, 115 V,
+  1.0 A max) feeding a **small pressure tank** (water ~5–8 gal, concentrate
+  ~1–2 gal). *TODO: pressure settings.*
+- Each machine gets its **own run of each fluid** from the pressure tanks —
+  separate lines, not a shared manifold. *TODO: tubing type and size.*
+- There's a **manual shutoff on each run** upstream of the machine.
+
+Why it matters to the design:
+
+- **The small pressure tanks are a safety layer.** We switch the pumps with
+  smart plugs and run them only while the shop is staffed or during a fill. A
+  valve stuck open can then deliver at most what's in the pressure tank —
+  about 5–8 gal of water — not an endless supply. Without that, a stuck valve
+  is unbounded. See [safety.md](docs/safety.md#the-safety-ladder).
+- **Supply flow sets the fill timing.** Our water arrives at ~4.2–4.4 L/min
+  (~1.1 gal/min); the fill cap, timeout and valve watchdog are sized around
+  that ([fill-logic.md](docs/fill-logic.md#5-the-metered-fill)). Measure yours.
+- **The concentrate line must be primed.** Air in it made our flow meter read
+  2.1× high. Concentrate also surges when its valve opens (the pressure tank
+  dumping), which is why doses are metered by volume, never timed.
+- **Shared pumps need shared rules.** Our pumps feed the whole shop, so a fill
+  on one machine re-pressurises every run. A stuck valve needs to lock the
+  pump off, not just alarm (designed, not built yet — see
+  [safety.md](docs/safety.md#known-gaps-as-of-2026-10-23)).
+
+### Other things this assumes
+
+- **Home Assistant**, running somewhere reliable, plus the ESPHome add-on (or
+  CLI) to flash the controller.
+- **Wired Ethernet at the machine** for the controller.
+- **A machine run-state signal.** Ours comes from a Shelly Pro 3EM measuring
+  current on the machine's supply. Anything that reliably says "running" works.
+- **A way to see the chip-conveyor wash.** We use a pressure transmitter
+  upstream of the conveyor's filter (it's part of our filter-pressure
+  monitoring). This is one of the fill criteria
+  ([why](docs/fill-logic.md#33-conveyor-wash-seen-in-the-last-10-minutes)).
+- **A 120 V outlet** at the cabinet (the 24 V supply is inside it).
+- **Your tank's geometry** — depth, where "full" is, the overflow lip — and a
+  way to measure gallons per mm (we metered a known volume in).
+
 ## Results so far
 
 - Automatic water fills **running unattended since 2026-10-16**, including
